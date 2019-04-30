@@ -1,111 +1,135 @@
-from keras.models import Sequential
-from keras.layers import Conv2D
-from keras.layers import MaxPooling2D
-from keras.layers import Flatten
-from keras.layers import Dense
-from keras.models import model_from_json
-import numpy
-import os
 
-# Initialising the CNN
-classifier = Sequential()
-
-# Step 1 - Convolution
-classifier.add(Conv2D(32, (10, 10), input_shape = (100, 100, 3), activation = 'relu'))
-
-# Step 2 - Pooling
-classifier.add(MaxPooling2D(pool_size = (2, 2)))
-
-# Adding a second convolutional layer
-classifier.add(Conv2D(32, (3, 3), activation = 'relu'))
-classifier.add(MaxPooling2D(pool_size = (2, 2)))
-
-# Step 3 - Flattening
-classifier.add(Flatten())
-
-# Step 4 - Full connection
-classifier.add(Dense(units = 128, activation = 'relu'))
-classifier.add(Dense(units = 7, activation = 'sigmoid')) # 7 units equals amount of output categories
-
-# Compiling the CNN
-classifier.compile(optimizer = 'adam', loss = 'categorical_crossentropy', metrics = ['accuracy'])
-
-
-# Part 2 - Fitting the CNN to the images
-from keras.preprocessing.image import ImageDataGenerator
-train_datagen = ImageDataGenerator(rescale = 1./255,
-shear_range = 0.2,
-zoom_range = 0.2,
-horizontal_flip = True)
-test_datagen = ImageDataGenerator(rescale = 1./255)
-training_set = train_datagen.flow_from_directory('dataset/training_set',
-target_size = (100, 100),
-batch_size = 21,
-class_mode = 'categorical')
-test_set = test_datagen.flow_from_directory('dataset/test_set',
-target_size = (100, 100),
-batch_size = 21,
-class_mode = 'categorical')
-classifier.fit_generator(training_set,
-steps_per_epoch = 8,
-epochs = 100,
-validation_data = test_set,
-validation_steps = 3)
-classifier.summary()
-
-# serialize weights to HDF5
-classifier.save_weights("dominoweights.h5")
-print("Saved model to disk")
-
-# Part 3 - Making new predictions
+import time
+import matplotlib.pyplot as plt
+from sklearn import svm, metrics
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV
+#from sklearn.preprocessing import StandardScaler
+from sklearn import preprocessing 
+from sklearn.decomposition import PCA
 import numpy as np
-from keras.preprocessing import image
+import os # Working with files and folders
+from PIL import Image # Image processing
+from PIL import ImageFilter
 
-path = 'dataset/prediction_images/' # Folder with my images
-for filename in os.listdir(path):
-  if "jpg" in filename:
-    test_image = image.load_img(path + filename, target_size = (100, 100))
-    test_image = image.img_to_array(test_image)
-    test_image = np.expand_dims(test_image, axis = 0)
-    result = classifier.predict(test_image)
-    print result
-    training_set.class_indices
-    folder = training_set.class_indices.keys()[(result[0].argmax())] # Get the index of the highest predicted value
-    if folder == '1':
-      prediction = '1x3'
-    elif folder == '2':
-      prediction = '1x8'
-    elif folder == '3':
-      prediction = 'Baby'
-    elif folder == '4':
-      prediction = '5x7'
-    elif folder == '5':
-      prediction = 'Upside down'
-    elif folder == '6':
-      prediction = '2x3'   
-    elif folder == '7':
-      prediction = '0x0'
-    else:
-      prediction = 'Unknown'
-    print "Prediction: " + filename + " seems to be " + prediction
-  else:
-    print "DSSTORE"
-  print "\n"
+### 
+### Data can be downloaded from https://www.dropbox.com/sh/s5f38k4l2on5mba/AACNQgXuw1edwEb6oO1w3CfOa?dl=0
+### 
 
-'''''
-# load json and create model
-json_file = open('model.json', 'r')
-loaded_model_json = json_file.read()
-json_file.close()
-loaded_model = model_from_json(loaded_model_json)
-# load weights into new model
-loaded_model.load_weights("model.h5")
-print("Loaded model from disk")
- 
-# evaluate loaded model on test data
-loaded_model.compile(loss='binary_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
-score = loaded_model.evaluate(X, Y, verbose=0)
-print("%s: %.2f%%" % (loaded_model.metrics_names[1], score[1]*100))
-'''
+
+start = time.time()
+rootdir = os.getcwd()
+
+image_file = 'images.npy'
+key_file = 'keys.npy'
+
+def predict_me(image_file_name, scaler, pca):
+  pm = Image.open(image_file_name)
+  pm = pm.resize([66,66])
+  a = np.array(pm.convert('L')).reshape(1,-1)
+  #a = np.array(pm.resize([66,66]).convert('L')).reshape(1,-1)) # array 66x66
+  a = scaler.transform(a)
+  a = pca.transform(a)
+  return classifier.predict(a)
+  
+def crop_image(im, sq_size):
+  new_width = sq_size
+  new_height = sq_size
+  width, height = im.size   # Get dimensions 
+  left = (width - new_width)/2
+  top = (height - new_height)/2
+  right = (width + new_width)/2
+  bottom = (height + new_height)/2
+  imc = im.crop((left, top, right, bottom))
+  return imc 
+  
+#def filter_image(im):
+  # All filter makes it worse
+  #imf = im.filter(ImageFilter.EMBOSS)
+  #return imf
+  
+def provide_altered_images(im):
+  im_list = [im]
+  im_list.append(im.rotate(90))
+  im_list.append(im.rotate(180))
+  im_list.append(im.rotate(270))
+  return im_list
+
+if (os.path.exists(image_file) and os.path.exists(key_file)):
+  print("Loading existing numpy's")
+  pixel_arr = np.load(image_file)
+  key = np.load(key_file)
+else:
+  print("Creating new numpy's")  
+  key_array = []
+  pixel_arr = np.empty((0,66*66), "uint8")
+
+  for subdir, dirs, files in os.walk('data'):
+    dir_name = subdir.split("/")[-1]    
+    if "x" in dir_name:
+      for file in files:
+        if ".DS_Store" not in file:
+          im = Image.open(os.path.join(subdir, file))
+          if im.size == (100,100):  
+            use_im = crop_image(im,66) # Most images are shot from too far away. This removes portions of it.
+            #use_im = filter_image(use_im) # Filters image, but does no good at all
+            im_list = provide_altered_images(use_im) # Create extra data with 3 rotated images of every image
+            for alt_im in im_list:
+              key_array.append(dir_name)  # Each image here is still the same as directory name
+              numpied_image = np.array(alt_im.convert('L')).reshape(1,-1) # Converts to grayscale
+              #Image.fromarray(np.reshape(numpied_image,(-1,100)), 'L').show()
+              pixel_arr = np.append(pixel_arr, numpied_image, axis=0)
+          im.close()
+
+  key = np.array(key_array)
+  np.save(image_file, pixel_arr)
+  np.save(key_file, key)
+
+
+
+# Create a classifier: a support vector classifier
+classifier = svm.SVC(gamma=0.001, C=10, kernel='rbf', class_weight='balanced') # gamma and C from tests
+#le = preprocessing.LabelEncoder()
+#le.fit(key)
+#transformed_key = le.transform(key)
+transformed_key = key
+
+
+X_train, X_test, y_train, y_test = train_test_split(pixel_arr, transformed_key, test_size=0.1,random_state=7)
+
+#scaler = preprocessing.StandardScaler()
+
+pca = PCA(n_components=500, svd_solver='randomized', whiten=True)
+# Fit on training set only.
+#scaler.fit(X_train)
+pca.fit(X_train)
+    
+# Apply transform to both the training set and the test set.
+#X_train = scaler.transform(X_train)
+#X_test = scaler.transform(X_test)
+    
+X_train_pca = pca.transform(X_train)
+X_test_pca = pca.transform(X_test)
+    
+    
+print ("Fit classifier")
+classifier = classifier.fit(X_train_pca, y_train)
+print ("Score = " + str(classifier.score(X_test_pca, y_test)))
+    
+# Now predict the value of the domino on the test data:
+expected = y_test
+    
+print ("Predicting")
+predicted = classifier.predict(X_test_pca)
+    
+print("Classification report for classifier %s:\n%s\n"
+      % (classifier, metrics.classification_report(expected, predicted)))
+#print("Confusion matrix:\n%s" % metrics.confusion_matrix(expected, predicted, labels  =list(set(key))))
+end = time.time()
+print(end - start)
+
+
+
+
 
 
